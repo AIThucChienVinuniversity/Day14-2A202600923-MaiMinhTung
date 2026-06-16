@@ -38,16 +38,47 @@ async def run_benchmark_with_results(agent_version: str):
         return None, None
 
     runner = BenchmarkRunner(MainAgent(), ExpertEvaluator(), MultiModelJudge())
+    start = time.time()
     results = await runner.run_all(dataset)
+    elapsed = time.time() - start
 
     total = len(results)
+    PASS_THRESHOLD = 4.0
+
+    passed = sum(
+        1 for r in results
+        if r["judge"]["final_score"] >= PASS_THRESHOLD
+    )
+
+    failed = total - passed
+
     summary = {
-        "metadata": {"version": agent_version, "total": total, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")},
+        "metadata": {
+            "version": agent_version,
+            "total": total,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        },
         "metrics": {
             "avg_score": sum(r["judge"]["final_score"] for r in results) / total,
             "hit_rate": sum(r["ragas"]["retrieval"]["hit_rate"] for r in results) / total,
-            "agreement_rate": sum(r["judge"]["agreement_rate"] for r in results) / total
+            "mrr": sum(r["ragas"]["retrieval"]["mrr"] for r in results) / total,
+            "agreement_rate": sum(r["judge"]["agreement_rate"] for r in results) / total,
+            "pass_threshold": PASS_THRESHOLD,
+            "passed": passed,
+            "failed": failed,
+            "pass_rate": passed / total
         }
+    }
+    summary["performance"] = {
+        "execution_time_seconds": round(elapsed, 3),
+        "target_met": elapsed < 120,
+        "estimated_input_tokens": total * 150,
+        "estimated_output_tokens": total * 50,
+        "estimated_cost_usd": round(
+            (total * 150 / 1_000_000) * 0.15 +
+            (total * 50 / 1_000_000) * 0.60,
+            6
+        )
     }
     return results, summary
 
@@ -77,7 +108,17 @@ async def main():
     with open("reports/benchmark_results.json", "w", encoding="utf-8") as f:
         json.dump(v2_results, f, ensure_ascii=False, indent=2)
 
-    if delta > 0:
+    decision = "APPROVE" if delta >= 0 else "BLOCK_RELEASE"
+    v2_summary["release_gate"] = {
+        "decision": decision,
+        "delta_avg_score": delta,
+        "rule": "Approve if V2 avg_score is not lower than V1"
+    }
+
+    with open("reports/summary.json", "w", encoding="utf-8") as f:
+        json.dump(v2_summary, f, ensure_ascii=False, indent=2)
+
+    if decision == "APPROVE":
         print("✅ QUYẾT ĐỊNH: CHẤP NHẬN BẢN CẬP NHẬT (APPROVE)")
     else:
         print("❌ QUYẾT ĐỊNH: TỪ CHỐI (BLOCK RELEASE)")
